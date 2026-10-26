@@ -1,0 +1,6 @@
+{
+  "name": "CEDSII SPACE",
+  "description": "Ultimate Rooted Game Space & Performance Optimizer featuring real-time CPU/GPU/FPS monitoring, CEDSII AI latency engine, and competitive game stabilization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
