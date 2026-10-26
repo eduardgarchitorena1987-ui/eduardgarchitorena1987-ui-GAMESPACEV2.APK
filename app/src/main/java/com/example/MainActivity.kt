@@ -67,10 +67,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import com.example.model.GamingTheme
 import com.example.ui.GamingViewModel
 import com.example.ui.components.FloatingFpsOverlay
 import com.example.ui.components.FloatingGamingOrb
+import com.example.ui.components.GlowButton
 import com.example.ui.components.IntroBootAnimation
 import com.example.ui.components.ShellNotificationHud
 import com.example.ui.components.TacticalCrosshairOverlay
@@ -128,6 +132,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshPermissions()
+        viewModel.syncFloatingBubbleState()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -151,6 +161,8 @@ fun MainAppScreen(
     val isAiAnalyzing by viewModel.isAiAnalyzing.collectAsState()
     val shellNotification by viewModel.shellNotification.collectAsState()
     val launchingGameName by viewModel.launchingGameName.collectAsState()
+    val showOverlayPermissionDialog by viewModel.showOverlayPermissionDialog.collectAsState()
+    val context = LocalContext.current
 
     var isThemeDialogOpen by remember { mutableStateOf(false) }
     var isFullScreenActive by remember { mutableStateOf(true) }
@@ -491,17 +503,19 @@ fun MainAppScreen(
                         sizeDp = tweaks.crosshairSizeDp
                     )
 
-                    // Floating Gaming Orb with 14 In-Game Features and Left Dock Tab
-                    FloatingGamingOrb(
-                        tweaks = tweaks,
-                        metrics = metrics,
-                        onUpdateTweaks = { updater -> viewModel.updateTweaks(updater) },
-                        onPurgeMemory = { viewModel.runQuickBoost() },
-                        onCalibrateGyro = { viewModel.calibrateGyro() },
-                        onAiPingBoost = { viewModel.sendAiCommand("boost network ping and gaming packets") },
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                    )
+                    // Floating Gaming Orb with 14 In-Game Features and Left Dock Tab (shown in-app when system overlay is not active)
+                    if (!isFloatingServiceRunning || !permissionState.hasOverlayPermission) {
+                        FloatingGamingOrb(
+                            tweaks = tweaks,
+                            metrics = metrics,
+                            onUpdateTweaks = { updater -> viewModel.updateTweaks(updater) },
+                            onPurgeMemory = { viewModel.runQuickBoost() },
+                            onCalibrateGyro = { viewModel.calibrateGyro() },
+                            onAiPingBoost = { viewModel.sendAiCommand("boost network ping and gaming packets") },
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                        )
+                    }
 
                     // Optional Floating FPS HUD
                     FloatingFpsOverlay(
@@ -606,6 +620,80 @@ fun MainAppScreen(
             onToggleSimulatedRoot = { enable -> viewModel.toggleSimulatedRoot(enable) },
             onDismiss = { viewModel.setRootDialogOpen(false) }
         )
+    }
+
+    // High-Visibility Overlay Permission Request Dialog for In-Game Floating Bubble
+    if (showOverlayPermissionDialog) {
+        BasicAlertDialog(onDismissRequest = { viewModel.setShowOverlayPermissionDialog(false) }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.60f)
+                    .glassmorphic(shape = RoundedCornerShape(20.dp), backgroundColor = Color(0xFF0B132B), borderColor = ToxicGreen)
+                    .padding(20.dp)
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(ToxicGreen.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Layers,
+                            contentDescription = "Overlay Permission",
+                            tint = ToxicGreen,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    Text(
+                        text = "ENABLE IN-GAME FLOATING BUBBLE",
+                        color = Color.White,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Text(
+                        text = "To keep the 3D Floating Bubble, True In-Game FPS Monitor, Crosshair & 5-Feature Dock visible while playing games (Call of Duty, PUBG, Free Fire, etc.), allow 'Display over other apps' in Android Settings.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setShowOverlayPermissionDialog(false)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("LATER", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        GlowButton(
+                            text = "ALLOW PERMISSION",
+                            onClick = {
+                                viewModel.setShowOverlayPermissionDialog(false)
+                                com.example.data.PermissionController.requestOverlayPermission(context)
+                            },
+                            modifier = Modifier.weight(1.6f),
+                            glowColor = ToxicGreen,
+                            testTag = "grant_overlay_dialog_btn",
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // Theme Picker Dialog

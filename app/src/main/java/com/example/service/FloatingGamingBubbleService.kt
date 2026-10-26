@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
@@ -175,6 +177,7 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         try {
             savedStateRegistryController.performRestore(null)
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
@@ -187,7 +190,18 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
 
             // Start real-time Choreographer in-game display monitor
             Choreographer.getInstance().postFrameCallback(inGameChoreographerCallback)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("FloatingBubble", "Error in onCreate", e)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        isRunning = true
+        startSafeNotification()
+        if (composeView == null && isOverlayPermissionGranted(this)) {
+            createFloatingOverlay()
+        }
+        return START_STICKY
     }
 
     private fun startSafeNotification() {
@@ -200,23 +214,36 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
                     description = "Active floating bubble over games"
+                    setShowBadge(false)
                 }
                 val manager = getSystemService(NotificationManager::class.java)
                 manager?.createNotificationChannel(channel)
 
                 val notification = Notification.Builder(this, channelId)
-                    .setContentTitle("CEDSII SPACE Overlay Active")
-                    .setContentText("Quick gaming controls floating over screen")
+                    .setContentTitle("CEDSII SPACE Bubble Active")
+                    .setContentText("Gaming HUD & 5-feature dock floating over games")
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setOngoing(true)
                     .build()
 
-                startForeground(1001, notification)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } else {
+                    startForeground(1001, notification)
+                }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("FloatingBubble", "startSafeNotification failed", e)
+        }
     }
 
     private fun createFloatingOverlay() {
-        val wm = windowManager ?: return
+        if (!isOverlayPermissionGranted(this)) {
+            android.util.Log.w("FloatingBubble", "Cannot create overlay: SYSTEM_ALERT_WINDOW permission not granted")
+            return
+        }
+        val wm = windowManager ?: (getSystemService(WINDOW_SERVICE) as? WindowManager).also { windowManager = it } ?: return
+        if (composeView != null) return
 
         val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -230,15 +257,16 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 30
-            y = 120
+            x = 24
+            y = 160
         }
 
-        composeView = ComposeView(this).apply {
+        val newComposeView = ComposeView(this).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setViewTreeLifecycleOwner(this@FloatingGamingBubbleService)
             setViewTreeViewModelStoreOwner(this@FloatingGamingBubbleService)
@@ -273,8 +301,12 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
         }
 
         try {
-            wm.addView(composeView, params)
-        } catch (_: Exception) {}
+            wm.addView(newComposeView, params)
+            composeView = newComposeView
+        } catch (e: Exception) {
+            android.util.Log.e("FloatingBubble", "Error adding compose view to WindowManager", e)
+            composeView = null
+        }
     }
 
     @Composable
@@ -1310,32 +1342,64 @@ class FloatingGamingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwn
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        isRunning = false
         try {
             Choreographer.getInstance().removeFrameCallback(inGameChoreographerCallback)
         } catch (_: Exception) {}
         try {
-            composeView?.let { windowManager?.removeView(it) }
+            composeView?.let {
+                windowManager?.removeView(it)
+                composeView = null
+            }
         } catch (_: Exception) {}
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-        store.clear()
+        try {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+            store.clear()
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
-        fun start(context: Context) {
-            val intent = Intent(context, FloatingGamingBubbleService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
+        var isRunning = false
+            private set
+
+        fun isOverlayPermissionGranted(context: Context): Boolean {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
             } else {
-                context.startService(intent)
+                true
+            }
+        }
+
+        fun start(context: Context): Boolean {
+            if (!isOverlayPermissionGranted(context)) {
+                return false
+            }
+            return try {
+                val intent = Intent(context, FloatingGamingBubbleService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                isRunning = true
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("FloatingBubble", "Failed to start FloatingGamingBubbleService", e)
+                false
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, FloatingGamingBubbleService::class.java)
-            context.stopService(intent)
+            try {
+                val intent = Intent(context, FloatingGamingBubbleService::class.java)
+                context.stopService(intent)
+            } catch (_: Exception) {}
+            isRunning = false
         }
     }
 }

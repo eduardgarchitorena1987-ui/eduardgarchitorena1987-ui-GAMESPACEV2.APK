@@ -63,6 +63,13 @@ class GamingViewModel(application: Application) : AndroidViewModel(application) 
     private val _launchingGameName = MutableStateFlow<String?>(null)
     val launchingGameName: StateFlow<String?> = _launchingGameName
 
+    private val _showOverlayPermissionDialog = MutableStateFlow(false)
+    val showOverlayPermissionDialog: StateFlow<Boolean> = _showOverlayPermissionDialog
+
+    fun setShowOverlayPermissionDialog(show: Boolean) {
+        _showOverlayPermissionDialog.value = show
+    }
+
     init {
         hardwareMonitor.startMonitoring()
         viewModelScope.launch {
@@ -108,34 +115,45 @@ class GamingViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    fun refreshPermissions() {
+        viewModelScope.launch {
+            PermissionController.checkAllPermissions(getApplication())
+        }
+    }
+
+    fun syncFloatingBubbleState() {
+        val hasOverlay = FloatingGamingBubbleService.isOverlayPermissionGranted(getApplication())
+        if (hasOverlay) {
+            if (_isFloatingBubbleServiceRunning.value && !FloatingGamingBubbleService.isRunning) {
+                FloatingGamingBubbleService.start(getApplication())
+            }
+        } else {
+            if (_isFloatingBubbleServiceRunning.value) {
+                FloatingGamingBubbleService.stop(getApplication())
+                _isFloatingBubbleServiceRunning.value = false
+            }
+        }
+    }
+
     fun toggleFloatingBubbleService() {
         val current = _isFloatingBubbleServiceRunning.value
         if (!current) {
-            val hasOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                android.provider.Settings.canDrawOverlays(getApplication())
-            } else {
-                true
-            }
-
+            val hasOverlay = FloatingGamingBubbleService.isOverlayPermissionGranted(getApplication())
             if (hasOverlay) {
-                FloatingGamingBubbleService.start(getApplication())
-                _isFloatingBubbleServiceRunning.value = true
-                ShellNotificationManager.notifyTweak(
-                    command = "service_manager start floating_bubble_overlay",
-                    subsystem = "SYSTEM OVERLAY",
-                    output = "ACTIVE OVER ALL GAMES [RC 0]"
-                )
-                Toast.makeText(getApplication(), "⚡ System-Wide Floating Bubble Active Over Games", Toast.LENGTH_SHORT).show()
+                val started = FloatingGamingBubbleService.start(getApplication())
+                _isFloatingBubbleServiceRunning.value = started
+                if (started) {
+                    ShellNotificationManager.notifyTweak(
+                        command = "service_manager start floating_bubble_overlay",
+                        subsystem = "SYSTEM OVERLAY",
+                        output = "ACTIVE OVER ALL GAMES [RC 0]"
+                    )
+                    Toast.makeText(getApplication(), "⚡ In-Game Bubble Active! Floating over games & apps.", Toast.LENGTH_SHORT).show()
+                }
             } else {
-                // Activate in-app floating orb without kicking user out to Settings
-                _tweakSettings.value = _tweakSettings.value.copy(floatingGamingOrbEnabled = true)
-                _isFloatingBubbleServiceRunning.value = true
-                ShellNotificationManager.notifyTweak(
-                    command = "in_app_bubble --enable 1 --mode sandboxed",
-                    subsystem = "GAMING ORB",
-                    output = "IN-APP BUBBLE ACTIVE [RC 0]"
-                )
-                Toast.makeText(getApplication(), "⚡ Floating Bubble Active! (Tip: Grant Overlay in Privilege Manager to float over other apps too)", Toast.LENGTH_LONG).show()
+                // Overlay permission is required to float over games. Show clear permission dialog!
+                _showOverlayPermissionDialog.value = true
+                triggerHaptic()
             }
         } else {
             FloatingGamingBubbleService.stop(getApplication())
@@ -221,6 +239,16 @@ class GamingViewModel(application: Application) : AndroidViewModel(application) 
             triggerDoubleHaptic()
             _launchingGameName.value = game.name
 
+            // Ensure Floating Gaming Bubble & FPS HUD is active over the game!
+            val hasOverlay = FloatingGamingBubbleService.isOverlayPermissionGranted(getApplication())
+            if (hasOverlay) {
+                FloatingGamingBubbleService.start(getApplication())
+                _isFloatingBubbleServiceRunning.value = true
+            } else {
+                // If overlay permission is not yet granted, open dialog so user can enable it
+                _showOverlayPermissionDialog.value = true
+            }
+
             // 1. Pre-launch optimization sequence
             hardwareMonitor.setTouchSampleRate(game.touchBoostHz)
             RootController.executeKernelCommand("echo 3 > /proc/sys/vm/drop_caches")
@@ -237,7 +265,7 @@ class GamingViewModel(application: Application) : AndroidViewModel(application) 
             val result = appRepository.launchApp(game.packageName)
             when (result) {
                 LaunchResult.LaunchedDirectly -> {
-                    Toast.makeText(getApplication(), "🚀 Launched ${game.name} with CEDSII Turbo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(getApplication(), "🚀 Launched ${game.name} • CEDSII Bubble Active", Toast.LENGTH_SHORT).show()
                 }
                 LaunchResult.OpenedStore -> {
                     Toast.makeText(getApplication(), "📦 Opening Google Play Store for ${game.name}...", Toast.LENGTH_SHORT).show()
